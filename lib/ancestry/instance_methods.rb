@@ -11,19 +11,51 @@ module Ancestry
       unless ancestry_callbacks_disabled?
         # If node is not a new record and ancestry was updated and the new ancestry is sane ...
         if ancestry_changed? && !new_record? && sane_ancestry?
-          # ... for each descendant ...
-          unscoped_descendants.each do |descendant|
-            # ... replace old ancestry with new ancestry
-            descendant.without_ancestry_callbacks do
-              descendant.update_attribute(
-                self.ancestry_base_class.ancestry_column,
-                descendant.read_attribute(descendant.class.ancestry_column).gsub(
-                  /^#{self.child_ancestry}/,
-                  if read_attribute(self.class.ancestry_column).blank? then id.to_s else "#{read_attribute self.class.ancestry_column }/#{id}" end
-                )
-              )
-            end
+          
+          # NEW SQL IMPLEMENTATION
+          sql_params = {
+              table: get_arel_table.name,
+              ancestry_column: self.ancestry_base_class.ancestry_column,
+              condition: descendant_conditions.to_sql,
+              old_ancestry: self.child_ancestry,
+              new_ancestry: read_attribute(self.class.ancestry_column).blank? ? id.to_s : "#{read_attribute self.class.ancestry_column}/#{id}"
+          }
+          
+          update_sql = ""
+          if self.ancestry_base_class.respond_to?(:depth_cache_column) && self.respond_to?(self.ancestry_base_class.depth_cache_column)
+            sql_params[:depth_cache_column] = self.ancestry_base_class.depth_cache_column.to_s
+            update_sql = <<-SQL
+UPDATE %{table}
+SET %{ancestry_column} = regexp_replace(%{ancestry_column}, '^%{old_ancestry}', '%{new_ancestry}'),
+    %{depth_cache_column} = length(regexp_replace(regexp_replace(ancestry, '^%{old_ancestry}', '%{new_ancestry}'), '\\d', '', 'g')) + 1
+WHERE %{condition}
+SQL
+          else
+            update_sql = <<-SQL
+UPDATE %{table}
+SET %{ancestry_column} = regexp_replace(%{ancestry_column}, '^%{old_ancestry}', '%{new_ancestry}')
+WHERE %{condition}
+SQL
           end
+          
+          ActiveRecord::Base.connection.execute(update_sql % sql_params)
+          
+          
+          # ORIGINAL implementation
+          # # ... for each descendant ...
+          # unscoped_descendants.each do |descendant|
+          #   # ... replace old ancestry with new ancestry
+          #   descendant.without_ancestry_callbacks do
+          #     descendant.update_attribute(
+          #       self.ancestry_base_class.ancestry_column,
+          #       descendant.read_attribute(descendant.class.ancestry_column).gsub(
+          #         /^#{self.child_ancestry}/,
+          #         if read_attribute(self.class.ancestry_column).blank? then id.to_s else "#{read_attribute self.class.ancestry_column }/#{id}" end
+          #       )
+          #     )
+          #   end
+          # end
+          
         end
       end
     end
